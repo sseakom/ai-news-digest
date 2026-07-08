@@ -280,7 +280,7 @@ def build_text(items):
 
 def push_ntfy(text):
     server = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-    topic = os.getenv("NTFY_TOPIC", "").strip()
+    topic = os.getenv("NTFY_TOPIC", "ai-news-7f3k9x").strip()
     if not topic:
         return False
     today = datetime.now(BEIJING).strftime("%Y-%m-%d")
