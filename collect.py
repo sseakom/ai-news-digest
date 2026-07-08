@@ -279,8 +279,8 @@ def build_text(items):
 
 
 def push_ntfy(text):
-    server = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-    topic = os.getenv("NTFY_TOPIC", "ai-news-7f3k9x").strip()
+    server = (os.getenv("NTFY_SERVER") or "https://ntfy.sh").rstrip("/")
+    topic = (os.getenv("NTFY_TOPIC") or "ai-news-7f3k9x").strip()
     if not topic:
         return False
     today = datetime.now(BEIJING).strftime("%Y-%m-%d")
@@ -294,9 +294,13 @@ def push_ntfy(text):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        log(f"  ntfy 响应: {resp.status}")
-    return True
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            log(f"  ntfy 响应: {resp.status}")
+        return True
+    except Exception as e:
+        log(f"  ! ntfy 推送失败: {e}")
+        return False
 
 
 def push_pushdeer(text):
@@ -312,9 +316,13 @@ def push_pushdeer(text):
     req = urllib.request.Request(
         "https://api2.pushdeer.com/message/push", data=data, method="POST"
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        log(f"  PushDeer 响应: {resp.status}")
-    return True
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            log(f"  PushDeer 响应: {resp.status}")
+        return True
+    except Exception as e:
+        log(f"  ! PushDeer 推送失败: {e}")
+        return False
 
 
 def push(text):
@@ -323,10 +331,9 @@ def push(text):
     elif push_pushdeer(text):
         log("已通过 PushDeer 推送")
     else:
-        log("!! 未配置推送渠道 (NTFY_TOPIC 或 PUSHDEER_KEY)")
+        log("!! 未配置推送渠道或推送失败, 摘要如下:")
         log("--- 摘要内容 ---")
         print(text)
-        sys.exit(1)
 
 
 def main():
