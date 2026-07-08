@@ -284,14 +284,14 @@ def push_ntfy(text):
     if not topic:
         return False
     today = datetime.now(BEIJING).strftime("%Y-%m-%d")
+    params = urllib.parse.urlencode({
+        "title": f"AI 日报 {today}",
+        "tags": "robot, newspaper",
+        "markdown": "1",
+    })
     req = urllib.request.Request(
-        f"{server}/{urllib.parse.quote(topic)}",
+        f"{server}/{urllib.parse.quote(topic)}?{params}",
         data=text.encode("utf-8"),
-        headers={
-            "Title": f"AI 日报 {today}",
-            "Tags": "robot, newspaper",
-            "Markdown": "yes",
-        },
         method="POST",
     )
     try:
