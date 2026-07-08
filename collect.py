@@ -16,7 +16,7 @@
   NTFY_SERVER       ntfy 服务器, 默认 https://ntfy.sh
   PUSHDEER_KEY      PushDeer 推送 key (已停更, 仅作兜底)
   DEEPSEEK_API_KEY  DeepSeek API key (可选, 用于中文摘要)
-  MAX_ITEMS         摘要最多包含条数, 默认 15
+  MAX_ITEMS         摘要最多包含条数, 默认 6
   HOURS             回溯窗口小时数, 默认 30 (略大于 24 容忍时区/延迟)
 """
 import os
@@ -31,21 +31,14 @@ import email.utils
 from datetime import datetime, timezone, timedelta
 
 # ---------- 配置: 信息源 ----------
-# arXiv / 机器之心 / 量子位 默认视为相关; HN / Reddit / 博客按关键词过滤。
+# 量子位 (纯 AI 媒体) 默认全部视为相关; 其余来源按关键词过滤。
+# 注: 机器之心 (jiqizhixin.com) 已关闭免费 RSS, 暂不可用
 FEEDS = {
-    "arXiv cs.AI": "https://export.arxiv.org/rss/cs.AI",
-    "arXiv cs.CL": "https://export.arxiv.org/rss/cs.CL",
-    "arXiv cs.LG": "https://export.arxiv.org/rss/cs.LG",
-    "Hacker News": "https://news.ycombinator.com/rss",
-    "r/MachineLearning": "https://www.reddit.com/r/MachineLearning/.rss",
-    "r/LocalLLaMA": "https://www.reddit.com/r/LocalLLaMA/.rss",
-    "OpenAI": "https://openai.com/news/rss.xml",
-    "Anthropic": "https://www.anthropic.com/news/rss.xml",
-    "Google DeepMind": "https://deepmind.google/blog/rss.xml",
-    "Meta AI": "https://ai.meta.com/blog/rss/",
-    "Hugging Face": "https://huggingface.co/blog/feed.xml",
-    "机器之心": "https://rsshub.app/jiqizhixin",
-    "量子位": "https://rsshub.app/qbitai/news",
+    "量子位": "https://www.qbitai.com/feed",
+    "Solidot": "https://www.solidot.org/index.rss",
+    "36氪": "https://36kr.com/feed",
+    "IT之家": "https://www.ithome.com/rss/",
+    "钛媒体": "https://www.tmtpost.com/rss.xml",
 }
 
 AI_KEYWORDS = [
@@ -59,18 +52,17 @@ AI_KEYWORDS = [
     "embodied", "embodied intelligence",
     # 中文
     "人工智能", "大模型", "大语言模型", "智能体", "多模态", "深度学习",
-    "具身智能", "具身",
+    "具身智能", "具身", "机器人", "算力", "自动驾驶", "AIGC",
+    "数字人", "智驾", "AI芯片", "计算机视觉", "强化学习",
+    "提示词", "微调", "开源模型", "幻觉",
 ]
 
-HOURS = int(os.getenv("HOURS", "30"))
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "6"))
+HOURS = int(os.getenv("HOURS") or "30")
+MAX_ITEMS = int(os.getenv("MAX_ITEMS") or "6")
 
 # ---------- 重要程度评分 ----------
 SOURCE_WEIGHT = {
-    "OpenAI": 10, "Anthropic": 10, "Google DeepMind": 10, "Meta AI": 9,
-    "Hugging Face": 8, "机器之心": 8, "量子位": 8,
-    "arXiv cs.AI": 7, "arXiv cs.CL": 6, "arXiv cs.LG": 6,
-    "Hacker News": 5, "r/MachineLearning": 4, "r/LocalLLaMA": 4,
+    "量子位": 10, "Solidot": 9, "36氪": 8, "IT之家": 7, "钛媒体": 7,
 }
 # 用户重点关注的话题, 命中加分
 HOT_TOPICS = ["agent", "智能体", "embodied", "具身", "具身智能"]
@@ -92,19 +84,11 @@ def strip_html(s):
 
 
 SOURCE_CN = {
-    "arXiv cs.AI": "arXiv·AI",
-    "arXiv cs.CL": "arXiv·CL",
-    "arXiv cs.LG": "arXiv·LG",
-    "Hacker News": "Hacker News",
-    "r/MachineLearning": "Reddit·机器学习",
-    "r/LocalLLaMA": "Reddit·本地大模型",
-    "OpenAI": "OpenAI",
-    "Anthropic": "Anthropic",
-    "Google DeepMind": "DeepMind",
-    "Meta AI": "Meta AI",
-    "Hugging Face": "Hugging Face",
-    "机器之心": "机器之心",
     "量子位": "量子位",
+    "Solidot": "Solidot·奇客",
+    "36氪": "36氪",
+    "IT之家": "IT之家",
+    "钛媒体": "钛媒体",
 }
 
 
@@ -167,6 +151,15 @@ def parse_date(s):
         return dt
     except Exception:
         pass
+    # 36氪等使用 "2026-07-08 11:03:34  +0800" 格式
+    m = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*([+-]\d{4})", s)
+    if m:
+        dt_str, tz_str = m.groups()
+        tz_str = tz_str[:3] + ":" + tz_str[3:]
+        try:
+            return datetime.fromisoformat(f"{dt_str}{tz_str}")
+        except Exception:
+            pass
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
@@ -258,7 +251,7 @@ def collect():
             log(f"  ! 获取失败: {name} ({e})")
             continue
         count = 0
-        always_relevant = name.startswith("arXiv") or name in ("机器之心", "量子位")
+        always_relevant = name == "量子位"
         for e in entries:
             title = strip_html(e.get("title", ""))
             if not title:
