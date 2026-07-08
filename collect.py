@@ -56,12 +56,24 @@ AI_KEYWORDS = [
     "fine-tun", "finetun", "multimodal", "reinforcement learning",
     "rlhf", "vision-language", "vision language", "mcp",
     "reasoning", "scaling law", "generative", "text-to-image", "agent",
+    "embodied", "embodied intelligence",
     # 中文
     "人工智能", "大模型", "大语言模型", "智能体", "多模态", "深度学习",
+    "具身智能", "具身",
 ]
 
 HOURS = int(os.getenv("HOURS", "30"))
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "15"))
+MAX_ITEMS = int(os.getenv("MAX_ITEMS", "6"))
+
+# ---------- 重要程度评分 ----------
+SOURCE_WEIGHT = {
+    "OpenAI": 10, "Anthropic": 10, "Google DeepMind": 10, "Meta AI": 9,
+    "Hugging Face": 8, "机器之心": 8, "量子位": 8,
+    "arXiv cs.AI": 7, "arXiv cs.CL": 6, "arXiv cs.LG": 6,
+    "Hacker News": 5, "r/MachineLearning": 4, "r/LocalLLaMA": 4,
+}
+# 用户重点关注的话题, 命中加分
+HOT_TOPICS = ["agent", "智能体", "embodied", "具身", "具身智能"]
 ABSTRACT_CAP = 400  # 单条送入 LLM 的摘要字符上限
 BEIJING = timezone(timedelta(hours=8))
 UA = "ai-news-digest/1.0 (+https://github.com)"
@@ -108,6 +120,30 @@ def _clean_abstract(s):
     if s.lower() in ("comments", "comment", "[removed]"):
         return ""
     return s
+
+
+def score_item(item):
+    """计算新闻重要程度权重 (越高越重要)。"""
+    score = SOURCE_WEIGHT.get(item["source"], 5)
+    low = item["title"].lower()
+    for topic in HOT_TOPICS:
+        if topic in low:
+            score += 5
+    score += min(sum(1 for k in AI_KEYWORDS if k in low), 5)
+    date = item.get("date")
+    if date:
+        try:
+            dt = datetime.fromisoformat(date)
+            hours_ago = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+            if hours_ago <= 6:
+                score += 3
+            elif hours_ago <= 12:
+                score += 2
+            elif hours_ago <= 24:
+                score += 1
+        except Exception:
+            pass
+    return score
 
 
 def _local(tag):
@@ -246,7 +282,9 @@ def collect():
             })
             count += 1
         log(f"  - {name}: {count} 条")
-    items.sort(key=lambda x: x["date"] or "", reverse=True)
+    for item in items:
+        item["score"] = score_item(item)
+    items.sort(key=lambda x: (x["score"], x["date"] or ""), reverse=True)
     return items
 
 
@@ -257,19 +295,20 @@ def llm_digest(items):
         return None
     top = items[:MAX_ITEMS]
     context = "\n\n".join(
-        f"[{i+1}] 源: {_source_cn(it['source'])}\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}\n链接: {it['link']}"
+        f"[{i+1}] 权重:{it['score']} 源: {_source_cn(it['source'])}\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}\n链接: {it['link']}"
         for i, it in enumerate(top)
     )
     prompt = (
-        "你是 AI 新闻编辑。下面是今天采集到的 AI 相关新闻条目。"
+        "你是 AI 新闻编辑。下面是今天采集到的 AI 相关新闻条目, 已按重要程度排序。"
         "请用中文生成一份简洁日报, 要求:\n"
         "1. 开头一句话概述今日 AI 领域趋势\n"
         "2. 将所有英文标题翻译成中文\n"
-        "3. 每条格式:\n"
-        "   **序号. 中文标题**\n"
+        "3. 保持给定排序 (重要程度从高到低), 在标题后用 `[权重]` 标注分值\n"
+        "4. 每条格式:\n"
+        "   ### 序号. 中文标题 `[权重]`\n"
         "   > 一句话中文摘要\n"
         "   🔗 [来源·查看原文](链接)\n"
-        "4. 保持客观、信息密度高, 不要寒暄\n"
+        "5. 保持客观、信息密度高, 不要寒暄\n"
         f"最多 {len(top)} 条。\n\n{context}"
     )
     body = json.dumps({
@@ -298,9 +337,9 @@ def llm_digest(items):
 
 def plain_list(items):
     top = items[:MAX_ITEMS]
-    lines = [f"共采集 {len(items)} 条, 精选 {len(top)} 条:\n"]
+    lines = [f"共采集 {len(items)} 条, 精选 {len(top)} 条 (按重要程度排序):\n"]
     for i, it in enumerate(top, 1):
-        lines.append(f"**{i}. {it['title']}**")
+        lines.append(f"### {i}. {it['title']} `[{it['score']}]`")
         abstract = _clean_abstract(it.get("abstract", ""))
         if abstract:
             lines.append(f"> {abstract[:150]}")

@@ -20,4 +20,4 @@ jobs:
           NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
           PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          MAX_ITEMS: '15'
+          MAX_ITEMS: '6'
