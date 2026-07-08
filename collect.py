@@ -106,6 +106,19 @@ def _clean_abstract(s):
     return s
 
 
+def _score_stars(score):
+    """根据权重分值返回星级, 用于视觉化重要程度。"""
+    if score >= 20:
+        return "★★★★★"
+    if score >= 15:
+        return "★★★★☆"
+    if score >= 12:
+        return "★★★☆☆"
+    if score >= 10:
+        return "★★☆☆☆"
+    return "★☆☆☆☆"
+
+
 def score_item(item):
     """计算新闻重要程度权重 (越高越重要)。"""
     score = SOURCE_WEIGHT.get(item["source"], 5)
@@ -288,26 +301,28 @@ def llm_digest(items):
         return None
     top = items[:MAX_ITEMS]
     context = "\n\n".join(
-        f"[{i+1}] 权重:{it['score']} 源: {_source_cn(it['source'])}\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}\n链接: {it['link']}"
+        f"[{i+1}] {_score_stars(it['score'])} 权重:{it['score']} 源: {_source_cn(it['source'])}\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}\n链接: {it['link']}"
         for i, it in enumerate(top)
     )
     prompt = (
-        "你是 AI 新闻编辑。下面是今天采集到的 AI 相关新闻条目, 已按重要程度排序。"
-        "请用中文生成一份简洁日报, 要求:\n"
-        "1. 开头一句话概述今日 AI 领域趋势\n"
-        "2. 将所有英文标题翻译成中文\n"
-        "3. 保持给定排序 (重要程度从高到低), 在标题后用 `[权重]` 标注分值\n"
-        "4. 每条格式:\n"
-        "   ### 序号. 中文标题 `[权重]`\n"
+        "你是 AI 新闻编辑。以下新闻已按重要程度排序, 请用中文生成日报正文。\n\n"
+        "格式要求 (严格遵守):\n"
+        f"1. 概述行: 今日采集 {len(items)} 条 · 精选 {len(top)} 条 · 按重要程度排序\n"
+        "2. 一条 --- 分隔线\n"
+        "3. 每条新闻:\n"
+        "   ## 序号. 中文标题\n"
+        "   ★★★★★ 权重 分值 · 来源\n"
         "   > 一句话中文摘要\n"
-        "   🔗 [来源·查看原文](链接)\n"
-        "5. 保持客观、信息密度高, 不要寒暄\n"
-        f"最多 {len(top)} 条。\n\n{context}"
+        "   🔗 [阅读原文](链接)\n"
+        "   ---\n"
+        "4. 星级: ≥20→★★★★★, 15-19→★★★★☆, 12-14→★★★☆☆, 10-11→★★☆☆☆, <10→★☆☆☆☆\n"
+        "5. 英文标题翻译成中文, 不输出大标题行, 不要寒暄\n\n"
+        f"{context}"
     )
     body = json.dumps({
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "你是专业 AI 新闻编辑, 擅长把英文技术新闻压缩成高密度中文简报。"},
+            {"role": "system", "content": "你是专业 AI 新闻编辑, 擅长将技术新闻压缩成高密度中文简报, 注重视觉层次和信息可读性。"},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.3,
@@ -330,13 +345,24 @@ def llm_digest(items):
 
 def plain_list(items):
     top = items[:MAX_ITEMS]
-    lines = [f"共采集 {len(items)} 条, 精选 {len(top)} 条 (按重要程度排序):\n"]
+    lines = [
+        f"今日采集 {len(items)} 条 · 精选 {len(top)} 条 · 按重要程度排序",
+        "",
+        "---",
+        "",
+    ]
     for i, it in enumerate(top, 1):
-        lines.append(f"### {i}. {it['title']} `[{it['score']}]`")
+        lines.append(f"## {i}. {it['title']}")
+        lines.append(f"{_score_stars(it['score'])} 权重 {it['score']} · {_source_cn(it['source'])}")
+        lines.append("")
         abstract = _clean_abstract(it.get("abstract", ""))
         if abstract:
-            lines.append(f"> {abstract[:150]}")
-        lines.append(f"🔗 [{_source_cn(it['source'])}·查看原文]({it['link']})\n")
+            lines.append(f"> {abstract[:100]}")
+            lines.append("")
+        lines.append(f"🔗 [阅读原文]({it['link']})")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
     return "\n".join(lines)
 
 
