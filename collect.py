@@ -2,17 +2,19 @@
 # -*- coding: utf-8 -*-
 """每日 AI 新闻聚合 + 推送 (仅用 Python 标准库, 零第三方依赖)。
 
-推送到手机 (二选一):
-  ntfy    : 设置 NTFY_TOPIC (主题名当密钥, 起复杂点), 默认服务器 https://ntfy.sh
-  PushDeer: 设置 PUSHDEER_KEY 即可走微信推送 (国内最稳)
+推送到手机 (按优先级依次尝试):
+  Server酱: 设置 SERVERCHAN_KEY 即可走微信推送 (国内推荐)
+  ntfy    : 设置 NTFY_TOPIC (主题名当密钥), 默认服务器 https://ntfy.sh
+  PushDeer: 设置 PUSHDEER_KEY (项目已停更, 仅作兜底)
 
 可选 AI 摘要: 设置 DEEPSEEK_API_KEY 后, 用 DeepSeek 把当天新闻汇总成中文简报;
 不设置则只推送标题列表 + 来源 + 链接。
 
 环境变量:
+  SERVERCHAN_KEY    Server酱 SendKey (推荐, 微信推送)
   NTFY_TOPIC        ntfy 主题名
   NTFY_SERVER       ntfy 服务器, 默认 https://ntfy.sh
-  PUSHDEER_KEY      PushDeer 推送 key (与 ntfy 二选一)
+  PUSHDEER_KEY      PushDeer 推送 key (已停更, 仅作兜底)
   DEEPSEEK_API_KEY  DeepSeek API key (可选, 用于中文摘要)
   MAX_ITEMS         摘要最多包含条数, 默认 15
   HOURS             回溯窗口小时数, 默认 30 (略大于 24 容忍时区/延迟)
@@ -315,6 +317,36 @@ def build_text(items):
     return header + "\n" + body
 
 
+def push_serverchan(text):
+    key = (os.getenv("SERVERCHAN_KEY") or "").strip()
+    if not key:
+        return False
+    today = datetime.now(BEIJING).strftime("%Y-%m-%d")
+    # 标题单独传, 正文去掉 # 行避免重复
+    parts = text.split("\n", 1)
+    desp = parts[1].lstrip("\n") if len(parts) > 1 and parts[0].startswith("# ") else text
+    data = urllib.parse.urlencode({
+        "title": f"AI 日报 {today}",
+        "desp": desp,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://sctapi.ftqq.com/{key}.send",
+        data=data,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        if result.get("code") == 0:
+            log("  Server酱 响应: 成功")
+            return True
+        log(f"  ! Server酱 推送失败: {result.get('message', result)}")
+        return False
+    except Exception as e:
+        log(f"  ! Server酱 推送失败: {e}")
+        return False
+
+
 def push_ntfy(text):
     server = (os.getenv("NTFY_SERVER") or "https://ntfy.sh").rstrip("/")
     topic = (os.getenv("NTFY_TOPIC") or "ai-news-7f3k9x").strip()
@@ -363,7 +395,9 @@ def push_pushdeer(text):
 
 
 def push(text):
-    if push_ntfy(text):
+    if push_serverchan(text):
+        log("已通过 Server酱 推送")
+    elif push_ntfy(text):
         log("已通过 ntfy 推送")
     elif push_pushdeer(text):
         log("已通过 PushDeer 推送")

@@ -15,6 +15,7 @@ jobs:
           python-version: '3.11'
       - run: python collect.py
         env:
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
           PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
