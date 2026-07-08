@@ -77,6 +77,37 @@ def strip_html(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
+SOURCE_CN = {
+    "arXiv cs.AI": "arXiv·AI",
+    "arXiv cs.CL": "arXiv·CL",
+    "arXiv cs.LG": "arXiv·LG",
+    "Hacker News": "Hacker News",
+    "r/MachineLearning": "Reddit·机器学习",
+    "r/LocalLLaMA": "Reddit·本地大模型",
+    "OpenAI": "OpenAI",
+    "Anthropic": "Anthropic",
+    "Google DeepMind": "DeepMind",
+    "Meta AI": "Meta AI",
+    "Hugging Face": "Hugging Face",
+    "机器之心": "机器之心",
+    "量子位": "量子位",
+}
+
+
+def _source_cn(name):
+    return SOURCE_CN.get(name, name)
+
+
+def _clean_abstract(s):
+    """过滤无意义的摘要内容 (如 HN 的 'Comments')。"""
+    if not s:
+        return ""
+    s = s.strip()
+    if s.lower() in ("comments", "comment", "[removed]"):
+        return ""
+    return s
+
+
 def _local(tag):
     return tag.split("}", 1)[-1] if "}" in tag else tag
 
@@ -224,13 +255,19 @@ def llm_digest(items):
         return None
     top = items[:MAX_ITEMS]
     context = "\n\n".join(
-        f"[{i+1}] 源: {it['source']}\n标题: {it['title']}\n摘要: {it['abstract']}\n链接: {it['link']}"
+        f"[{i+1}] 源: {_source_cn(it['source'])}\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}\n链接: {it['link']}"
         for i, it in enumerate(top)
     )
     prompt = (
         "你是 AI 新闻编辑。下面是今天采集到的 AI 相关新闻条目。"
-        "请用中文生成一份简洁日报:先一句话概述今日趋势,然后用编号列表,每条"
-        "给出「标题 + 一句话中文摘要 + 来源 + 链接」。保持客观、信息密度高,不要寒暄。"
+        "请用中文生成一份简洁日报, 要求:\n"
+        "1. 开头一句话概述今日 AI 领域趋势\n"
+        "2. 将所有英文标题翻译成中文\n"
+        "3. 每条格式:\n"
+        "   **序号. 中文标题**\n"
+        "   > 一句话中文摘要\n"
+        "   🔗 [来源·查看原文](链接)\n"
+        "4. 保持客观、信息密度高, 不要寒暄\n"
         f"最多 {len(top)} 条。\n\n{context}"
     )
     body = json.dumps({
@@ -259,13 +296,13 @@ def llm_digest(items):
 
 def plain_list(items):
     top = items[:MAX_ITEMS]
-    lines = [f"今日共采集 {len(items)} 条 AI 新闻, 精选 {len(top)} 条:\n"]
+    lines = [f"共采集 {len(items)} 条, 精选 {len(top)} 条:\n"]
     for i, it in enumerate(top, 1):
-        lines.append(f"{i}. {it['title']}")
-        lines.append(f"   来源: {it['source']}")
-        if it["abstract"]:
-            lines.append(f"   {it['abstract'][:120]}")
-        lines.append(f"   {it['link']}\n")
+        lines.append(f"**{i}. {it['title']}**")
+        abstract = _clean_abstract(it.get("abstract", ""))
+        if abstract:
+            lines.append(f"> {abstract[:150]}")
+        lines.append(f"🔗 [{_source_cn(it['source'])}·查看原文]({it['link']})\n")
     return "\n".join(lines)
 
 
