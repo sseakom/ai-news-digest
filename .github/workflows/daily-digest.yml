@@ -2,7 +2,7 @@ name: AI News Daily Digest
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # 01:00 UTC = 09:00 北京时间 (GitHub 可能有延迟)
+    - cron: '30 1 * * *'  # 01:30 UTC = 09:30 北京时间 (错峰避开整点高峰)
   workflow_dispatch:      # 手动触发, 用于测试
 
 jobs:
