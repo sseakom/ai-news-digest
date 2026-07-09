@@ -295,37 +295,29 @@ def collect():
 
 
 def llm_digest(items):
-    """用 DeepSeek 生成中文简报。失败/无 key 则返回 None, 由调用方回退。"""
+    """用 DeepSeek 为 top 条目生成中文标题 + 一句话摘要, 原地写回 items。
+    成功返回 True; 无 key / 调用失败 / 解析异常返回 False, 由调用方回退纯列表。"""
     key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not key:
-        return None
+        return False
     top = items[:MAX_ITEMS]
     context = "\n\n".join(
-        f"[{i+1}] {_score_stars(it['score'])} 权重:{it['score']} 源: {_source_cn(it['source'])}\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}\n链接: {it['link']}"
+        f"[{i+1}]\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}"
         for i, it in enumerate(top)
     )
     prompt = (
-        "你是 AI 新闻编辑。以下新闻已按重要程度排序, 请用中文生成日报正文。\n\n"
-        "格式要求 (严格遵守):\n"
-        f"1. 概述行: 今日采集 {len(items)} 条 · 精选 {len(top)} 条 · 按重要程度排序\n"
-        "2. 一条 --- 分隔线\n"
-        "3. 每条新闻:\n"
-        "   ## 序号. 中文标题\n"
-        "   ★★★★★ 权重 分值 · 来源\n"
-        "   > 一句话中文摘要\n"
-        "   🔗 [阅读原文](链接)\n"
-        "   ---\n"
-        "4. 星级: ≥20→★★★★★, 15-19→★★★★☆, 12-14→★★★☆☆, 10-11→★★☆☆☆, <10→★☆☆☆☆\n"
-        "5. 英文标题翻译成中文, 不输出大标题行, 不要寒暄\n\n"
+        "你是 AI 新闻编辑。为每条新闻生成: 中文标题(英文译成中文, 已是中文则保持)和一句话摘要(≤30字, 点出核心事实)。\n"
+        "只输出 JSON 数组, 顺序与输入一致, 不要解释或前后缀:\n"
+        '[{"t":"中文标题","s":"一句话摘要"}]\n\n'
         f"{context}"
     )
     body = json.dumps({
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "你是专业 AI 新闻编辑, 擅长将技术新闻压缩成高密度中文简报, 注重视觉层次和信息可读性。"},
+            {"role": "system", "content": "你是专业 AI 新闻编辑, 擅长把技术新闻压缩成高密度中文简报。"},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.3,
+        "temperature": 0.2,
         "stream": False,
     }).encode("utf-8")
     req = urllib.request.Request(
@@ -337,10 +329,36 @@ def llm_digest(items):
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        return data["choices"][0]["message"]["content"].strip()
+        text = data["choices"][0]["message"]["content"].strip()
     except Exception as e:
         log(f"  ! DeepSeek 调用失败, 回退纯列表: {e}")
-        return None
+        return False
+    # 容错解析 JSON 数组 (模型可能套 ```json``` 围栏或带前后缀)
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\[.*\]", text, re.S)
+        if not m:
+            log("  ! DeepSeek 返回非 JSON, 回退纯列表")
+            return False
+        try:
+            result = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            log("  ! DeepSeek JSON 解析失败, 回退纯列表")
+            return False
+    if not isinstance(result, list) or len(result) != len(top):
+        log(f"  ! DeepSeek 返回条数不符 ({len(result) if isinstance(result, list) else 0}/{len(top)}), 回退纯列表")
+        return False
+    for i, r in enumerate(result):
+        if not isinstance(r, dict):
+            continue
+        t = (r.get("t") or "").strip()
+        s = (r.get("s") or "").strip()
+        if t:
+            top[i]["title"] = t
+        if s:
+            top[i]["abstract"] = s
+    return True
 
 
 def plain_list(items):
@@ -371,8 +389,8 @@ def build_text(items):
     header = f"# AI 日报 {today}\n"
     if not items:
         return header + "\n今天没有采集到新的 AI 新闻。"
-    body = llm_digest(items) or plain_list(items)
-    return header + "\n" + body
+    llm_digest(items)  # 原地润色标题/摘要; 失败则静默, plain_list 用原始数据
+    return header + "\n" + plain_list(items)
 
 
 def push_serverchan(text):
