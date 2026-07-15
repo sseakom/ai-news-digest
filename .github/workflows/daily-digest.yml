@@ -2,7 +2,7 @@ name: AI News Daily Digest
 
 on:
   schedule:
-    - cron: '30 20 * * *'  # 20:30 UTC = 04:30 北京时间 (提前5小时)
+    - cron: '30 22 * * *'  # 22:30 UTC = 06:30 北京时间 (推迟2小时)
   workflow_dispatch:      # 手动触发, 用于测试
 
 jobs:
