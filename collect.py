@@ -12,7 +12,7 @@
 
 AI 模型能力排行榜: 每日附在新闻后, 分两个维度各取前 10:
   Coding 能力 - Arena AI / LMArena 代码投票榜 (ELO 评分, 每日更新, 含最新模型)
-  Agent 能力  - SWE-bench Verified (真实 GitHub Issue 解决率, agent 系统能力)
+  Agent 能力  - Arena AI / LMArena 智能体评分榜 (多维度净提升分; 评测门槛高, 模型较少)
 两个源均为 GitHub raw 数据文件, 零依赖抓取; 单个源失败优雅降级不影响整体。
 
 环境变量:
@@ -408,16 +408,12 @@ def plain_list(items):
 
 # ---------- AI 模型能力排行榜 ----------
 # Coding 能力: Arena AI / LMArena 代码投票榜 (ELO 评分, 每日镜像更新)
-# Agent 能力: SWE-bench Verified (500 个真实 GitHub Issue, agent 系统解决率)
+# Agent 能力: Arena AI / LMArena 智能体多维度评分榜 (Net Improvement 净提升分, rank 依据)
 ARENA_BASE = (
     "https://raw.githubusercontent.com/oolong-tea-2026/arena-ai-leaderboards/"
     "main/data"
 )
 ARENA_LATEST_URL = ARENA_BASE + "/latest.json"
-SWEBENCH_URL = (
-    "https://raw.githubusercontent.com/swe-bench/swe-bench.github.io/"
-    "master/data/leaderboards.json"
-)
 LB_TOP = 10  # 每个榜单展示条数
 
 
@@ -446,27 +442,32 @@ def fetch_arena_code_leaderboard():
     ]
 
 
-def fetch_swebench_leaderboard():
-    """SWE-bench Verified 榜 (agent/SWE 能力)。取 Verified 子榜按解决率降序, 返回前 LB_TOP。
-    成功返回 [(name, resolved, date)], 失败返回 None。"""
+def fetch_arena_agent_leaderboard():
+    """Arena AI (LMArena) 智能体评分榜 (多维度)。先抓 latest 得 path, 再抓 agent.json。
+    取 Net Improvement (rank 依据) 作主分值。成功返回 [(model, vendor, net_improvement)], 失败 None。"""
     try:
-        req = urllib.request.Request(SWEBENCH_URL, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=60) as r:
+        req = urllib.request.Request(ARENA_LATEST_URL, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            latest = json.loads(r.read().decode("utf-8"))
+        path = latest.get("path") or latest.get("date")
+        if not path:
+            return None
+        agent_url = f"{ARENA_BASE}/{path}/agent.json"
+        req = urllib.request.Request(agent_url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=30) as r:
             data = json.loads(r.read().decode("utf-8"))
     except Exception as e:
-        log(f"  ! SWE-bench 榜获取失败: {e}")
+        log(f"  ! Arena AI 智能体榜获取失败: {e}")
         return None
-    for lb in data.get("leaderboards", []):
-        if lb.get("name") == "Verified":
-            results = lb.get("results", [])
-            results = sorted(
-                results, key=lambda x: x.get("resolved") or 0, reverse=True
-            )[:LB_TOP]
-            return [
-                (r.get("name", ""), r.get("resolved") or 0, r.get("date", ""))
-                for r in results
-            ]
-    return []
+    out = []
+    for m in data.get("models", [])[:LB_TOP]:
+        ni = 0.0
+        for s in m.get("scores", []):
+            if s.get("name") == "Net Improvement":
+                ni = s.get("score") or 0
+                break
+        out.append((m.get("model", ""), m.get("vendor", ""), ni))
+    return out
 
 
 def build_leaderboard():
@@ -488,23 +489,23 @@ def build_leaderboard():
             lines.append(f"| {_rank_medal(i)} | {model} | {vendor} | {score} |")
     lines.append("")
 
-    # --- Agent 能力 (SWE-bench Verified) ---
-    lines.append("**Agent 能力** · SWE-bench Verified (真实 Issue 解决率)")
+    # --- Agent 能力 (Arena AI 智能体评分榜) ---
+    lines.append("**Agent 能力** · Arena AI (LMArena 智能体多维度评分)")
     lines.append("")
-    swe = fetch_swebench_leaderboard()
-    if swe is None:
+    ag = fetch_arena_agent_leaderboard()
+    if ag is None:
         lines.append("> 数据获取失败, 稍后重试")
-    elif not swe:
+    elif not ag:
         lines.append("> 暂无数据")
     else:
-        lines.append("| 排名 | Agent 系统 | 解决率 |")
-        lines.append("|:----:|------------|--------:|")
-        for i, (name, resolved, date) in enumerate(swe, 1):
-            lines.append(f"| {_rank_medal(i)} | {name} | {resolved}% |")
+        lines.append("| 排名 | 模型 | 厂商 | 净提升 |")
+        lines.append("|:----:|------|------|------:|")
+        for i, (model, vendor, ni) in enumerate(ag, 1):
+            lines.append(f"| {_rank_medal(i)} | {model} | {vendor} | {ni} |")
     lines.append("")
 
     # 数据来源说明，增加可信度
-    lines.append("> 📌 数据来源：Arena AI (LMArena) 代码投票榜 与 SWE-bench Verified 公开榜单。")
+    lines.append("> 📌 数据来源：Arena AI (LMArena) 代码投票榜与智能体评分榜。")
     lines.append("")
 
     return "\n".join(lines)
@@ -602,13 +603,18 @@ def push_pushdeer(text):
 
 
 def push(text):
+    """Server酱与ntfy同时推送; 两者均失败时回退PushDeer兜底; 全部失败则打印摘要。"""
+    ok = False
     if push_serverchan(text):
+        ok = True
         log("已通过 Server酱 推送")
-    elif push_ntfy(text):
+    if push_ntfy(text):
+        ok = True
         log("已通过 ntfy 推送")
-    elif push_pushdeer(text):
+    if not ok and push_pushdeer(text):
+        ok = True
         log("已通过 PushDeer 推送")
-    else:
+    if not ok:
         log("!! 未配置推送渠道或推送失败, 摘要如下:")
         log("--- 摘要内容 ---")
         print(text)
