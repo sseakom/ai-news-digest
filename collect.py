@@ -10,11 +10,6 @@
 可选 AI 摘要: 设置 DEEPSEEK_API_KEY 后, 用 DeepSeek 把当天新闻汇总成中文简报;
 不设置则只推送标题列表 + 来源 + 链接。
 
-AI 模型能力排行榜: 每日附在新闻后, 分两个维度各取前 10:
-  Coding 能力 - Arena AI / LMArena 代码投票榜 (ELO 评分, 每日更新, 含最新模型)
-  Agent 能力  - Arena AI / LMArena 智能体评分榜 (多维度净提升分; 评测门槛高, 模型较少)
-两个源均为 GitHub raw 数据文件, 零依赖抓取; 单个源失败优雅降级不影响整体。
-
 环境变量:
   SERVERCHAN_KEY    Server酱 SendKey (推荐, 微信推送)
   NTFY_TOPIC        ntfy 主题名
@@ -123,17 +118,6 @@ def _score_stars(score):
     if score >= 10:
         return "★★☆☆☆"
     return "★☆☆☆☆"
-
-
-def _rank_medal(rank):
-    """前三名返回奖牌 emoji, 其余返回数字排名。"""
-    if rank == 1:
-        return "🥇"
-    if rank == 2:
-        return "🥈"
-    if rank == 3:
-        return "🥉"
-    return str(rank)
 
 
 def score_item(item):
@@ -399,115 +383,10 @@ def plain_list(items):
             lines.append("")
         lines.append(f"🔗 [阅读原文]({it['link']})")
         lines.append("")
-        # 条目间加分隔线，最后一条后不加，避免与排行榜分隔线重复
+        # 条目间加分隔线，最后一条后不加
         if i < len(top):
             lines.append("---")
             lines.append("")
-    return "\n".join(lines)
-
-
-# ---------- AI 模型能力排行榜 ----------
-# Coding 能力: Arena AI / LMArena 代码投票榜 (ELO 评分, 每日镜像更新)
-# Agent 能力: Arena AI / LMArena 智能体多维度评分榜 (Net Improvement 净提升分, rank 依据)
-ARENA_BASE = (
-    "https://raw.githubusercontent.com/oolong-tea-2026/arena-ai-leaderboards/"
-    "main/data"
-)
-ARENA_LATEST_URL = ARENA_BASE + "/latest.json"
-LB_TOP = 10  # 每个榜单展示条数
-
-
-def fetch_arena_code_leaderboard():
-    """Arena AI (LMArena) 代码投票榜 (ELO 评分)。先抓 latest 得最新日期 path,
-    再抓该日 code.json。成功返回 [(model, vendor, score, ci, votes)], 失败 None。"""
-    try:
-        req = urllib.request.Request(ARENA_LATEST_URL, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            latest = json.loads(r.read().decode("utf-8"))
-        path = latest.get("path") or latest.get("date")
-        if not path:
-            return None
-        code_url = f"{ARENA_BASE}/{path}/code.json"
-        req = urllib.request.Request(code_url, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read().decode("utf-8"))
-    except Exception as e:
-        log(f"  ! Arena AI 代码榜获取失败: {e}")
-        return None
-    models = data.get("models", [])[:LB_TOP]
-    return [
-        (m.get("model", ""), m.get("vendor", ""), m.get("score") or 0,
-         m.get("ci") or 0, m.get("votes") or 0)
-        for m in models
-    ]
-
-
-def fetch_arena_agent_leaderboard():
-    """Arena AI (LMArena) 智能体评分榜 (多维度)。先抓 latest 得 path, 再抓 agent.json。
-    取 Net Improvement (rank 依据) 作主分值。成功返回 [(model, vendor, net_improvement)], 失败 None。"""
-    try:
-        req = urllib.request.Request(ARENA_LATEST_URL, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            latest = json.loads(r.read().decode("utf-8"))
-        path = latest.get("path") or latest.get("date")
-        if not path:
-            return None
-        agent_url = f"{ARENA_BASE}/{path}/agent.json"
-        req = urllib.request.Request(agent_url, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read().decode("utf-8"))
-    except Exception as e:
-        log(f"  ! Arena AI 智能体榜获取失败: {e}")
-        return None
-    out = []
-    for m in data.get("models", [])[:LB_TOP]:
-        ni = 0.0
-        for s in m.get("scores", []):
-            if s.get("name") == "Net Improvement":
-                ni = s.get("score") or 0
-                break
-        out.append((m.get("model", ""), m.get("vendor", ""), ni))
-    return out
-
-
-def build_leaderboard():
-    """构建 AI 模型能力排行榜 Markdown 段落, 单个源失败优雅降级。"""
-    lines = ["", "## 🏆 AI 模型能力排行榜", ""]
-
-    # --- Coding 能力 (Arena AI 代码投票 ELO 榜) ---
-    lines.append("**Coding 能力** · Arena AI (LMArena 代码投票 ELO 评分)")
-    lines.append("")
-    arena = fetch_arena_code_leaderboard()
-    if arena is None:
-        lines.append("> 数据获取失败, 稍后重试")
-    elif not arena:
-        lines.append("> 暂无数据")
-    else:
-        lines.append("| 排名 | 模型 | 厂商 | ELO |")
-        lines.append("|:----:|------|------|----:|")
-        for i, (model, vendor, score, ci, votes) in enumerate(arena, 1):
-            lines.append(f"| {_rank_medal(i)} | {model} | {vendor} | {score} |")
-    lines.append("")
-
-    # --- Agent 能力 (Arena AI 智能体评分榜) ---
-    lines.append("**Agent 能力** · Arena AI (LMArena 智能体多维度评分)")
-    lines.append("")
-    ag = fetch_arena_agent_leaderboard()
-    if ag is None:
-        lines.append("> 数据获取失败, 稍后重试")
-    elif not ag:
-        lines.append("> 暂无数据")
-    else:
-        lines.append("| 排名 | 模型 | 厂商 | 净提升 |")
-        lines.append("|:----:|------|------|------:|")
-        for i, (model, vendor, ni) in enumerate(ag, 1):
-            lines.append(f"| {_rank_medal(i)} | {model} | {vendor} | {ni} |")
-    lines.append("")
-
-    # 数据来源说明，增加可信度
-    lines.append("> 📌 数据来源：Arena AI (LMArena) 代码投票榜与智能体评分榜。")
-    lines.append("")
-
     return "\n".join(lines)
 
 
@@ -519,9 +398,6 @@ def build_text(items):
         parts.append(plain_list(items))
     else:
         parts.append("今天没有采集到新的 AI 新闻。")
-    # 用一条分隔线隔开新闻列表与排行榜，避免与列表内部分隔线重复
-    parts.append("---")
-    parts.append(build_leaderboard())
     return "\n\n".join(part.strip("\n") for part in parts).rstrip() + "\n"
 
 
