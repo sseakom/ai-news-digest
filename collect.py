@@ -7,15 +7,15 @@
   ntfy    : 设置 NTFY_TOPIC (主题名当密钥), 默认服务器 https://ntfy.sh
   PushDeer: 设置 PUSHDEER_KEY (项目已停更, 仅作兜底)
 
-可选 AI 摘要: 设置 DEEPSEEK_API_KEY 后, 用 DeepSeek 把当天新闻汇总成中文简报;
-不设置则只推送标题列表 + 来源 + 链接。
+可选 AI 翻译摘要: 设置 DEEPSEEK_API_KEY 后, 用 DeepSeek 将英文新闻翻译成中文标题+摘要简报;
+不设置则只推送英文原标题列表 + 来源 + 链接。
 
 环境变量:
   SERVERCHAN_KEY    Server酱 SendKey (推荐, 微信推送)
   NTFY_TOPIC        ntfy 主题名
   NTFY_SERVER       ntfy 服务器, 默认 https://ntfy.sh
   PUSHDEER_KEY      PushDeer 推送 key (已停更, 仅作兜底)
-  DEEPSEEK_API_KEY  DeepSeek API key (可选, 用于中文摘要)
+  DEEPSEEK_API_KEY  DeepSeek API key (可选, 用于英文翻译+中文摘要)
   MAX_ITEMS         摘要最多包含条数, 默认 10
   HOURS             回溯窗口小时数, 默认 30 (略大于 24 容忍时区/延迟)
 """
@@ -31,18 +31,15 @@ import email.utils
 from datetime import datetime, timezone, timedelta
 
 # ---------- 配置: 信息源 ----------
-# 量子位 (纯 AI 媒体) 默认全部视为相关; 其余来源按关键词过滤。
-# 注: 机器之心 (jiqizhixin.com) 已关闭免费 RSS, 暂不可用
+# VentureBeat AI (纯 AI 频道) 默认全部视为相关; 其余来源按关键词过滤。
 FEEDS = {
-    "量子位": "https://www.qbitai.com/feed",
-    "Solidot": "https://www.solidot.org/index.rss",
-    "36氪": "https://36kr.com/feed",
-    "IT之家": "https://www.ithome.com/rss/",
-    "钛媒体": "https://www.tmtpost.com/rss.xml",
+    "VentureBeat AI": "https://venturebeat.com/category/ai/feed/",
+    "Ars Technica": "https://feeds.arstechnica.com/arstechnica/index",
+    "The Verge": "https://www.theverge.com/rss/index.xml",
+    "Hacker News": "https://hnrss.org/frontpage",
 }
 
 AI_KEYWORDS = [
-    # 英文
     "ai", "a.i.", "artificial intelligence", "llm", "gpt", "claude",
     "gemini", "llama", "qwen", "deepseek", "diffusion", "transformer",
     "machine learning", "deep learning", "neural", "agi", "rag",
@@ -50,11 +47,9 @@ AI_KEYWORDS = [
     "rlhf", "vision-language", "vision language", "mcp",
     "reasoning", "scaling law", "generative", "text-to-image", "agent",
     "embodied", "embodied intelligence",
-    # 中文
-    "人工智能", "大模型", "大语言模型", "智能体", "多模态", "深度学习",
-    "具身智能", "具身", "机器人", "算力", "自动驾驶", "AIGC",
-    "数字人", "智驾", "AI芯片", "计算机视觉", "强化学习",
-    "提示词", "微调", "开源模型", "幻觉",
+    "chatbot", "copilot", "openai", "anthropic", "midjourney",
+    "stable diffusion", "sora", "grok", "mistral", "inference",
+    "training", "benchmark", "alignment", "safety",
 ]
 
 HOURS = int(os.getenv("HOURS") or "30")
@@ -63,10 +58,10 @@ MIN_SCORE = 12  # 重要程度门槛: 仅推送 ★★★☆☆(score>=12) 及�
 
 # ---------- 重要程度评分 ----------
 SOURCE_WEIGHT = {
-    "量子位": 10, "Solidot": 9, "36氪": 8, "IT之家": 7, "钛媒体": 7,
+    "VentureBeat AI": 10, "Ars Technica": 9, "The Verge": 8, "Hacker News": 7,
 }
 # 用户重点关注的话题, 命中加分
-HOT_TOPICS = ["agent", "智能体", "embodied", "具身", "具身智能"]
+HOT_TOPICS = ["agent", "embodied", "agi", "openai", "anthropic", "gpt-5", "reasoning"]
 ABSTRACT_CAP = 400  # 单条送入 LLM 的摘要字符上限
 BEIJING = timezone(timedelta(hours=8))
 UA = "ai-news-digest/1.0 (+https://github.com)"
@@ -85,11 +80,10 @@ def strip_html(s):
 
 
 SOURCE_CN = {
-    "量子位": "量子位",
-    "Solidot": "Solidot·奇客",
-    "36氪": "36氪",
-    "IT之家": "IT之家",
-    "钛媒体": "钛媒体",
+    "VentureBeat AI": "VentureBeat",
+    "Ars Technica": "Ars Technica",
+    "The Verge": "The Verge",
+    "Hacker News": "Hacker News",
 }
 
 
@@ -165,7 +159,7 @@ def parse_date(s):
         return dt
     except Exception:
         pass
-    # 36氪等使用 "2026-07-08 11:03:34  +0800" 格式
+    # 部分源使用非标准日期格式
     m = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*([+-]\d{4})", s)
     if m:
         dt_str, tz_str = m.groups()
@@ -265,7 +259,7 @@ def collect():
             log(f"  ! 获取失败: {name} ({e})")
             continue
         count = 0
-        always_relevant = name == "量子位"
+        always_relevant = name == "VentureBeat AI"
         for e in entries:
             title = strip_html(e.get("title", ""))
             if not title:
@@ -307,7 +301,9 @@ def llm_digest(items):
         for i, it in enumerate(top)
     )
     prompt = (
-        "你是 AI 新闻编辑。为每条新闻生成: 中文标题(英文译成中文, 已是中文则保持)和1-2句话摘要(约60字, 点出核心事实与关键影响或细节)。\n"
+        "你是 AI 新闻编辑。所有新闻来源均为英文媒体。为每条新闻生成:\n"
+        "1. 中文标题: 将英文标题翻译成中文(技术术语可保留英文缩写如 AI/GPT/LLM)\n"
+        "2. 一句话摘要: 约60字中文, 点出核心事实与关键影响或细节\n"
         "只输出 JSON 数组, 顺序与输入一致, 不要解释或前后缀:\n"
         '[{"t":"中文标题","s":"一句话摘要"}]\n\n'
         f"{context}"
@@ -315,7 +311,7 @@ def llm_digest(items):
     body = json.dumps({
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "你是专业 AI 新闻编辑, 擅长把技术新闻压缩成高密度中文简报。"},
+            {"role": "system", "content": "你是专业 AI 新闻编辑, 擅长将英文技术新闻翻译并浓缩成高密度中文简报。"},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
