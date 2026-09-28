@@ -20,4 +20,5 @@ jobs:
           NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
           PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAX_ITEMS: '6'

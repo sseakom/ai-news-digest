@@ -19,6 +19,7 @@
   MAX_ITEMS         摘要最多包含条数, 默认 10
   HOURS             回溯窗口小时数, 默认 30 (略大于 24 容忍时区/延迟)
 """
+
 import os
 import re
 import sys
@@ -37,19 +38,72 @@ FEEDS = {
     "Ars Technica": "https://feeds.arstechnica.com/arstechnica/index",
     "The Verge": "https://www.theverge.com/rss/index.xml",
     "Hacker News": "https://hnrss.org/frontpage",
+    "Reddit r/LocalLLaMA": "https://www.reddit.com/r/LocalLLaMA/.rss",
+    "Reddit r/MachineLearning": "https://www.reddit.com/r/MachineLearning/.rss",
+    "Reddit r/singularity": "https://www.reddit.com/r/singularity/.rss",
 }
 
 AI_KEYWORDS = [
-    "ai", "a.i.", "artificial intelligence", "llm", "gpt", "claude",
-    "gemini", "llama", "qwen", "deepseek", "diffusion", "transformer",
-    "machine learning", "deep learning", "neural", "agi", "rag",
-    "fine-tun", "finetun", "multimodal", "reinforcement learning",
-    "rlhf", "vision-language", "vision language", "mcp",
-    "reasoning", "scaling law", "generative", "text-to-image", "agent",
-    "embodied", "embodied intelligence",
-    "chatbot", "copilot", "openai", "anthropic", "midjourney",
-    "stable diffusion", "sora", "grok", "mistral", "inference",
-    "training", "benchmark", "alignment", "safety",
+    "ai",
+    "a.i.",
+    "artificial intelligence",
+    "llm",
+    "gpt",
+    "claude",
+    "gemini",
+    "llama",
+    "qwen",
+    "deepseek",
+    "diffusion",
+    "transformer",
+    "machine learning",
+    "deep learning",
+    "neural",
+    "agi",
+    "rag",
+    "fine-tun",
+    "finetun",
+    "multimodal",
+    "reinforcement learning",
+    "rlhf",
+    "vision-language",
+    "vision language",
+    "mcp",
+    "reasoning",
+    "scaling law",
+    "generative",
+    "text-to-image",
+    "agent",
+    "embodied",
+    "embodied intelligence",
+    "chatbot",
+    "copilot",
+    "openai",
+    "anthropic",
+    "midjourney",
+    "stable diffusion",
+    "sora",
+    "grok",
+    "mistral",
+    "inference",
+    "training",
+    "benchmark",
+    "alignment",
+    "safety",
+    "huggingface",
+    "hugging face",
+    "local llm",
+    "open source",
+    "open-source",
+    "fine-tuned",
+    "vllm",
+    "ollama",
+    "langchain",
+    "diffusion model",
+    "language model",
+    "foundation model",
+    "moe",
+    "mixture of experts",
 ]
 
 HOURS = int(os.getenv("HOURS") or "30")
@@ -58,11 +112,39 @@ MIN_SCORE = 12  # 重要程度门槛: 仅推送 ★★★☆☆(score>=12) 及�
 
 # ---------- 重要程度评分 ----------
 SOURCE_WEIGHT = {
-    "VentureBeat AI": 10, "Ars Technica": 9, "The Verge": 8, "Hacker News": 7,
+    "VentureBeat AI": 10,
+    "Ars Technica": 9,
+    "The Verge": 8,
+    "Hacker News": 7,
+    "HuggingFace Papers": 8,
+    "HuggingFace Models": 7,
+    "Reddit r/LocalLLaMA": 6,
+    "Reddit r/MachineLearning": 5,
+    "Reddit r/singularity": 5,
+    "GitHub Trending": 6,
 }
 # 用户重点关注的话题, 命中加分
-HOT_TOPICS = ["agent", "embodied", "agi", "openai", "anthropic", "gpt-5", "reasoning"]
+HOT_TOPICS = [
+    "agent",
+    "embodied",
+    "agi",
+    "openai",
+    "anthropic",
+    "gpt-5",
+    "reasoning",
+    "local llm",
+    "open source",
+    "huggingface",
+]
 ABSTRACT_CAP = 400  # 单条送入 LLM 的摘要字符上限
+# 全部视为 AI 相关的来源 (不做关键词过滤)
+ALWAYS_RELEVANT = {
+    "VentureBeat AI",
+    "Reddit r/LocalLLaMA",
+    "HuggingFace Papers",
+    "HuggingFace Models",
+    "GitHub Trending",
+}
 BEIJING = timezone(timedelta(hours=8))
 UA = "ai-news-digest/1.0 (+https://github.com)"
 
@@ -84,6 +166,12 @@ SOURCE_CN = {
     "Ars Technica": "Ars Technica",
     "The Verge": "The Verge",
     "Hacker News": "Hacker News",
+    "Reddit r/LocalLLaMA": "Reddit r/LocalLLaMA",
+    "Reddit r/MachineLearning": "Reddit r/ML",
+    "Reddit r/singularity": "Reddit r/Singularity",
+    "HuggingFace Papers": "HF Papers",
+    "HuggingFace Models": "HF Models",
+    "GitHub Trending": "GitHub Trending",
 }
 
 
@@ -244,45 +332,162 @@ def fetch_entries(url):
         return parse_feed(r.read())
 
 
+def fetch_json(url, headers=None):
+    """获取 JSON API 并返回解析后的 Python 对象。"""
+    h = {"User-Agent": UA, "Accept": "application/json"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def fetch_hf_papers():
+    """HuggingFace 每日热门论文 (JSON API, 非 RSS)。"""
+    data = fetch_json("https://huggingface.co/api/daily_papers")
+    items = []
+    for entry in data:
+        paper = entry.get("paper", entry) if isinstance(entry, dict) else {}
+        pid = paper.get("id", "") or entry.get("id", "")
+        title = entry.get("title", "") or paper.get("title", "")
+        summary = paper.get("summary", "") or entry.get("summary", "")
+        upvotes = paper.get("upvotes", 0) or entry.get("upvotes", 0)
+        # 日期在条目顶层: publishedAt (非 paper.published)
+        date_str = entry.get("publishedAt", "") or paper.get("published", "")
+        if upvotes:
+            summary = f"👍 {upvotes} · {summary}" if summary else f"👍 {upvotes}"
+        items.append(
+            {
+                "title": title,
+                "link": f"https://huggingface.co/papers/{pid}" if pid else "",
+                "summary": summary,
+                "date": parse_date(date_str),
+            }
+        )
+    return items
+
+
+def fetch_hf_models():
+    """HuggingFace 趋势模型 (JSON API, 非 RSS)。"""
+    data = fetch_json("https://huggingface.co/api/models?sort=trending&limit=10")
+    items = []
+    for m in data:
+        mid = m.get("id", "")
+        tags = m.get("tags", [])
+        pipeline = m.get("pipeline_tag", "")
+        downloads = m.get("downloads", 0)
+        likes = m.get("likes", 0)
+        parts = []
+        if pipeline:
+            parts.append(f"pipeline: {pipeline}")
+        if tags:
+            parts.append(f"tags: {', '.join(tags[:5])}")
+        if downloads or likes:
+            parts.append(f"⬇ {downloads} ❤ {likes}")
+        summary = " · ".join(parts) if parts else mid
+        items.append(
+            {
+                "title": f"Trending model: {mid}" if mid else "",
+                "link": f"https://huggingface.co/{mid}" if mid else "",
+                "summary": summary,
+                "date": parse_date(m.get("createdAt", "")),
+            }
+        )
+    return items
+
+
+def fetch_github_trending():
+    """GitHub 近 7 天创建、按 star 降序的 AI 仓库 (Search API)。"""
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    query = urllib.parse.quote(f"ai OR llm OR gpt OR transformer created:>{since}")
+    url = (
+        f"https://api.github.com/search/repositories"
+        f"?q={query}&sort=stars&order=desc&per_page=10"
+    )
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = fetch_json(url, headers=headers)
+    items = []
+    for repo in data.get("items", []):
+        name = repo.get("full_name", "")
+        desc = repo.get("description", "") or ""
+        stars = repo.get("stargazers_count", 0)
+        items.append(
+            {
+                "title": f"{name}: {desc}" if desc else name,
+                "link": repo.get("html_url", ""),
+                "summary": f"⭐ {stars} · {desc}"[:ABSTRACT_CAP],
+                "date": parse_date(repo.get("created_at", "")),
+            }
+        )
+    return items
+
+
+# 非 RSS 源: 名称 → 获取函数
+JSON_SOURCES = {
+    "HuggingFace Papers": fetch_hf_papers,
+    "HuggingFace Models": fetch_hf_models,
+    "GitHub Trending": fetch_github_trending,
+}
+
+
 def is_ai_relevant(title):
     low = title.lower()
     return any(k in low for k in AI_KEYWORDS)
 
 
+def _process_entries(source, entries, items, seen, cutoff):
+    """处理单个来源的条目: 去重、过滤、收集。"""
+    count = 0
+    always = source in ALWAYS_RELEVANT
+    for e in entries:
+        title = strip_html(e.get("title", ""))
+        if not title:
+            continue
+        link = (e.get("link") or "").strip()
+        date = e.get("date")
+        if not (always or is_ai_relevant(title)):
+            continue
+        if date and date < cutoff:
+            continue
+        key = re.sub(r"\W+", "", title.lower())[:60] or link
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "source": source,
+                "title": title,
+                "link": link,
+                "date": date.isoformat() if date else "",
+                "abstract": strip_html(e.get("summary", ""))[:ABSTRACT_CAP],
+            }
+        )
+        count += 1
+    log(f"  - {source}: {count} 条")
+
+
 def collect():
     cutoff = datetime.now(timezone.utc) - timedelta(hours=HOURS)
     items, seen = [], set()
+    # RSS 源
     for name, url in FEEDS.items():
         try:
             entries = fetch_entries(url)
         except Exception as e:
             log(f"  ! 获取失败: {name} ({e})")
             continue
-        count = 0
-        always_relevant = name == "VentureBeat AI"
-        for e in entries:
-            title = strip_html(e.get("title", ""))
-            if not title:
-                continue
-            link = (e.get("link") or "").strip()
-            date = e.get("date")
-            if not (always_relevant or is_ai_relevant(title)):
-                continue
-            if date and date < cutoff:
-                continue
-            key = re.sub(r"\W+", "", title.lower())[:60] or link
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append({
-                "source": name,
-                "title": title,
-                "link": link,
-                "date": date.isoformat() if date else "",
-                "abstract": strip_html(e.get("summary", ""))[:ABSTRACT_CAP],
-            })
-            count += 1
-        log(f"  - {name}: {count} 条")
+        _process_entries(name, entries, items, seen, cutoff)
+    # JSON API 源
+    for name, fn in JSON_SOURCES.items():
+        try:
+            entries = fn()
+        except Exception as e:
+            log(f"  ! 获取失败: {name} ({e})")
+            continue
+        _process_entries(name, entries, items, seen, cutoff)
     for item in items:
         item["score"] = score_item(item)
     items.sort(key=lambda x: (x["score"], x["date"] or ""), reverse=True)
@@ -297,7 +502,7 @@ def llm_digest(items):
         return False
     top = [it for it in items if it["score"] >= MIN_SCORE][:MAX_ITEMS]
     context = "\n\n".join(
-        f"[{i+1}]\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}"
+        f"[{i + 1}]\n标题: {it['title']}\n摘要: {_clean_abstract(it['abstract'])}"
         for i, it in enumerate(top)
     )
     prompt = (
@@ -308,15 +513,20 @@ def llm_digest(items):
         '[{"t":"中文标题","s":"一句话摘要"}]\n\n'
         f"{context}"
     )
-    body = json.dumps({
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": "你是专业 AI 新闻编辑, 擅长将英文技术新闻翻译并浓缩成高密度中文简报。"},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-        "stream": False,
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "model": "deepseek-chat",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是专业 AI 新闻编辑, 擅长将英文技术新闻翻译并浓缩成高密度中文简报。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "stream": False,
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         "https://api.deepseek.com/v1/chat/completions",
         data=body,
@@ -344,7 +554,9 @@ def llm_digest(items):
             log("  ! DeepSeek JSON 解析失败, 回退纯列表")
             return False
     if not isinstance(result, list) or len(result) != len(top):
-        log(f"  ! DeepSeek 返回条数不符 ({len(result) if isinstance(result, list) else 0}/{len(top)}), 回退纯列表")
+        log(
+            f"  ! DeepSeek 返回条数不符 ({len(result) if isinstance(result, list) else 0}/{len(top)}), 回退纯列表"
+        )
         return False
     for i, r in enumerate(result):
         if not isinstance(r, dict):
@@ -404,11 +616,15 @@ def push_serverchan(text):
     today = datetime.now(BEIJING).strftime("%Y-%m-%d")
     # 标题单独传, 正文去掉 # 行避免重复
     parts = text.split("\n", 1)
-    desp = parts[1].lstrip("\n") if len(parts) > 1 and parts[0].startswith("# ") else text
-    data = urllib.parse.urlencode({
-        "title": f"AI 日报 {today}",
-        "desp": desp,
-    }).encode("utf-8")
+    desp = (
+        parts[1].lstrip("\n") if len(parts) > 1 and parts[0].startswith("# ") else text
+    )
+    data = urllib.parse.urlencode(
+        {
+            "title": f"AI 日报 {today}",
+            "desp": desp,
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         f"https://sctapi.ftqq.com/{key}.send",
         data=data,
@@ -433,11 +649,13 @@ def push_ntfy(text):
     if not topic:
         return False
     today = datetime.now(BEIJING).strftime("%Y-%m-%d")
-    params = urllib.parse.urlencode({
-        "title": f"AI 日报 {today}",
-        "tags": "robot, newspaper",
-        "markdown": "1",
-    })
+    params = urllib.parse.urlencode(
+        {
+            "title": f"AI 日报 {today}",
+            "tags": "robot, newspaper",
+            "markdown": "1",
+        }
+    )
     req = urllib.request.Request(
         f"{server}/{urllib.parse.quote(topic)}?{params}",
         data=text.encode("utf-8"),

@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-每日 AI 新闻聚合推送服务。从国外英文科技媒体采集 RSS → 按重要程度评分排序 → (可选) DeepSeek 翻译为中文标题+摘要简报 → 推送到手机。全程跑在 GitHub Actions 上，零第三方依赖，零服务器成本。
+每日 AI 新闻聚合推送服务。从国外英文科技媒体、AI 社区、论文/模型平台采集 RSS + JSON API → 按重要程度评分排序 → (可选) DeepSeek 翻译为中文标题+摘要简报 → 推送到手机。全程跑在 GitHub Actions 上，零第三方依赖，零服务器成本。
 
 ## 技术架构
 
@@ -10,7 +10,9 @@
 
 **数据流**:
 ```
-RSS 源 → fetch_entries() → parse_feed() → 关键词过滤 + 去重 + 时间窗口
+RSS 源 (FEEDS) → fetch_entries() → parse_feed() ─┐
+                                                   ├→ _process_entries() → 关键词过滤 + 去重 + 时间窗口
+JSON API 源 (JSON_SOURCES) → fetch_xxx() ─────────┘
   → score_item() 评分 → 排序 → 取 top N
   → llm_digest() (有 DeepSeek key) 或 plain_list() (回退)
   → build_text() 拼装 → push() 推送
@@ -18,20 +20,28 @@ RSS 源 → fetch_entries() → parse_feed() → 关键词过滤 + 去重 + 时�
 
 ## 信息源
 
-4 个国外英文科技媒体/社区，均使用原生 RSS:
+10 个信息源，涵盖科技媒体、AI 社区、论文/模型平台和代码仓库，RSS 与 JSON API 混合:
 
-| 来源 | RSS 地址 | 权重 | 过滤策略 |
-|------|---------|------|---------|
-| VentureBeat AI | `https://venturebeat.com/category/ai/feed/` | 10 | 全部视为相关 (纯 AI 频道) |
-| Ars Technica | `https://feeds.arstechnica.com/arstechnica/index` | 9 | 关键词过滤 |
-| The Verge | `https://www.theverge.com/rss/index.xml` | 8 | 关键词过滤 |
-| Hacker News | `https://hnrss.org/frontpage` | 7 | 关键词过滤 |
+| 来源 | 地址 | 类型 | 权重 | 过滤策略 |
+|------|---------|------|------|---------|
+| VentureBeat AI | `venturebeat.com/category/ai/feed/` | RSS | 10 | 全部视为相关 (纯 AI 频道) |
+| Ars Technica | `feeds.arstechnica.com/arstechnica/index` | RSS | 9 | 关键词过滤 |
+| The Verge | `theverge.com/rss/index.xml` | RSS | 8 | 关键词过滤 |
+| Hacker News | `hnrss.org/frontpage` | RSS | 7 | 关键词过滤 |
+| HuggingFace Papers | `huggingface.co/api/daily_papers` | JSON API | 8 | 全部视为相关 (纯 AI 论文) |
+| HuggingFace Models | `huggingface.co/api/models?sort=trending` | JSON API | 7 | 全部视为相关 (趋势模型) |
+| Reddit r/LocalLLaMA | `reddit.com/r/LocalLLaMA/.rss` | RSS | 6 | 全部视为相关 (纯 AI 社区) |
+| Reddit r/MachineLearning | `reddit.com/r/MachineLearning/.rss` | RSS | 5 | 关键词过滤 |
+| Reddit r/singularity | `reddit.com/r/singularity/.rss` | RSS | 5 | 关键词过滤 |
+| GitHub Trending | `api.github.com/search/repositories` | JSON API | 6 | 全部视为相关 (AI 仓库搜索) |
 
 ## 关键代码位置
 
 | 功能 | 函数/变量 |
 |------|----------|
-| 信息源配置 | `FEEDS` |
+| 信息源配置 (RSS) | `FEEDS` |
+| 非 RSS 源配置 | `JSON_SOURCES` |
+| 全相关来源集合 | `ALWAYS_RELEVANT` |
 | AI 关键词 | `AI_KEYWORDS` |
 | 回溯窗口 | `HOURS` |
 | 最大条数 | `MAX_ITEMS` |
@@ -42,7 +52,12 @@ RSS 源 → fetch_entries() → parse_feed() → 关键词过滤 + 去重 + 时�
 | 星级转换 | `_score_stars()` |
 | 重要程度评分 | `score_item()` |
 | 日期解析 | `parse_date()` |
-| RSS/Atom 解析 | `parse_feed()` |
+| RSS 采集 | `fetch_entries()` |
+| JSON API 采集 | `fetch_json()` |
+| HuggingFace 论文 | `fetch_hf_papers()` |
+| HuggingFace 模型 | `fetch_hf_models()` |
+| GitHub 趋势仓库 | `fetch_github_trending()` |
+| 条目处理 (去重/过滤) | `_process_entries()` |
 | 采集主逻辑 | `collect()` |
 | DeepSeek 摘要 | `llm_digest()` |
 | 纯列表格式化 | `plain_list()` |
@@ -56,8 +71,8 @@ RSS 源 → fetch_entries() → parse_feed() → 关键词过滤 + 去重 + 时�
 
 `score_item()` 综合四个因素:
 
-1. **来源基础分** (`SOURCE_WEIGHT`): VentureBeat AI 10 分最高，纯 AI 频道的报道天然更重要
-2. **话题加分** (`HOT_TOPICS`): 命中 `agent`/`embodied`/`agi`/`openai`/`anthropic`/`gpt-5`/`reasoning` 各 +5 分
+1. **来源基础分** (`SOURCE_WEIGHT`): VentureBeat AI 10 分最高，HuggingFace Papers 8 分，纯 AI 来源天然更重要
+2. **话题加分** (`HOT_TOPICS`): 命中 `agent`/`embodied`/`agi`/`openai`/`anthropic`/`gpt-5`/`reasoning`/`local llm`/`open source`/`huggingface` 各 +5 分
 3. **关键词密度**: 标题命中 `AI_KEYWORDS` 的数量，最多加 5 分
 4. **时效加分**: 6 小时内 +3，12 小时内 +2，24 小时内 +1
 
@@ -74,6 +89,7 @@ RSS 源 → fetch_entries() → parse_feed() → 关键词过滤 + 去重 + 时�
 | `NTFY_SERVER` | ntfy 服务器 | `https://ntfy.sh` | 否 |
 | `PUSHDEER_KEY` | PushDeer key (已停更, 兜底) | — | 否 |
 | `DEEPSEEK_API_KEY` | DeepSeek API key (可选, 翻译+摘要) | — | 否 |
+| `GITHUB_TOKEN` | GitHub Token (可选, 提升 Search API 速率限制) | — | 否 |
 | `MAX_ITEMS` | 摘要最多条数 | `10` | 否 |
 | `HOURS` | 回溯窗口小时数 | `30` | 否 |
 
@@ -93,7 +109,7 @@ python -c "import collect; items=collect.collect(); print(collect.build_text(ite
 python -c "import collect; items=collect.collect(); [print(f'{i[\"score\"]:>3} {i[\"source\"]} | {i[\"title\"][:50]}') for i in items]"
 ```
 
-网络请求需要能访问 `venturebeat.com`、`feeds.arstechnica.com`、`theverge.com`、`hnrss.org` (RSS 源) 及 `api.deepseek.com` (可选翻译摘要)。
+网络请求需要能访问 `venturebeat.com`、`feeds.arstechnica.com`、`theverge.com`、`hnrss.org`、`reddit.com` (RSS 源), `huggingface.co`、`api.github.com` (JSON API 源) 及 `api.deepseek.com` (可选翻译摘要)。
 
 ## GitHub Actions
 
@@ -131,7 +147,9 @@ Markdown 格式，适配 Server酱 (微信) 和 ntfy 的 markdown 渲染:
 
 ## 常见修改
 
-**加信息源**: 在 `FEEDS` 字典加一行 `"名称": "RSS_URL"`，同时在 `SOURCE_WEIGHT` 和 `SOURCE_CN` 加对应条目。如果新源是纯 AI 媒体，在 `collect()` 的 `always_relevant` 判断里加上。
+**加 RSS 信息源**: 在 `FEEDS` 字典加一行 `"名称": "RSS_URL"`，同时在 `SOURCE_WEIGHT` 和 `SOURCE_CN` 加对应条目。如果新源是纯 AI 媒体，在 `ALWAYS_RELEVANT` 集合里加上。
+
+**加 JSON API 信息源**: 写一个 `fetch_xxx()` 函数返回 `[{title, link, summary, date}]` 格式，在 `JSON_SOURCES` 字典加一行 `"名称": fetch_xxx`，同时在 `SOURCE_WEIGHT`、`SOURCE_CN` 加对应条目，按需加入 `ALWAYS_RELEVANT`。
 
 **改关键词**: `AI_KEYWORDS` 列表和 `HOT_TOPICS` 列表直接增删。
 
@@ -145,5 +163,8 @@ Markdown 格式，适配 Server酱 (微信) 和 ntfy 的 markdown 渲染:
 
 - `os.getenv("X") or "默认值"` 模式: GitHub Actions 空 secret 会变成空字符串，不能用 `os.getenv("X", "默认值")` (后者对空字符串不回退)
 - Hacker News RSS 的 description 常为 'Comments', `_clean_abstract` 会过滤
+- Reddit RSS 可能被限流 (429); GitHub Actions IP 可正常访问，本地可能超时
+- HuggingFace API 不需要认证，但本地网络可能无法直连 (GitHub Actions 无此问题)
+- GitHub Search API 未认证时限 10 次/分钟，单次调用足够; 设置 `GITHUB_TOKEN` 可提升至 30 次/分钟
 - `collect.py` 修改后本地跑一次验证: `python -c "import collect; print(collect.build_text(collect.collect()))"`
 - README.md 内容较旧 (仍引用 arXiv/HN/Reddit 等国际源)，以 `collect.py` 代码和本文件为准
