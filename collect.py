@@ -39,9 +39,6 @@ FEEDS = {
     "Ars Technica": "https://feeds.arstechnica.com/arstechnica/index",
     "The Verge": "https://www.theverge.com/rss/index.xml",
     "Hacker News": "https://hnrss.org/frontpage",
-    "Reddit r/LocalLLaMA": "https://www.reddit.com/r/LocalLLaMA/.rss",
-    "Reddit r/MachineLearning": "https://www.reddit.com/r/MachineLearning/.rss",
-    "Reddit r/singularity": "https://www.reddit.com/r/singularity/.rss",
 }
 
 AI_KEYWORDS = [
@@ -119,9 +116,6 @@ SOURCE_WEIGHT = {
     "Hacker News": 7,
     "HuggingFace Papers": 8,
     "HuggingFace Models": 7,
-    "Reddit r/LocalLLaMA": 6,
-    "Reddit r/MachineLearning": 5,
-    "Reddit r/singularity": 5,
     "GitHub Trending": 6,
 }
 # 用户重点关注的话题, 命中加分
@@ -141,7 +135,6 @@ ABSTRACT_CAP = 400  # 单条送入 LLM 的摘要字符上限
 # 全部视为 AI 相关的来源 (不做关键词过滤)
 ALWAYS_RELEVANT = {
     "VentureBeat AI",
-    "Reddit r/LocalLLaMA",
     "HuggingFace Papers",
     "HuggingFace Models",
     "GitHub Trending",
@@ -173,9 +166,6 @@ SOURCE_CN = {
     "Ars Technica": "Ars Technica",
     "The Verge": "The Verge",
     "Hacker News": "Hacker News",
-    "Reddit r/LocalLLaMA": "Reddit r/LocalLLaMA",
-    "Reddit r/MachineLearning": "Reddit r/ML",
-    "Reddit r/singularity": "Reddit r/Singularity",
     "HuggingFace Papers": "HF Papers",
     "HuggingFace Models": "HF Models",
     "GitHub Trending": "GitHub Trending",

@@ -20,7 +20,7 @@ JSON API 源 (JSON_SOURCES) → fetch_xxx() ─────────┘
 
 ## 信息源
 
-10 个信息源，涵盖科技媒体、AI 社区、论文/模型平台和代码仓库，RSS 与 JSON API 混合:
+7 个信息源，涵盖科技媒体、论文/模型平台和代码仓库，RSS 与 JSON API 混合:
 
 | 来源 | 地址 | 类型 | 权重 | 过滤策略 |
 |------|---------|------|------|---------|
@@ -30,9 +30,6 @@ JSON API 源 (JSON_SOURCES) → fetch_xxx() ─────────┘
 | Hacker News | `hnrss.org/frontpage` | RSS | 7 | 关键词过滤 |
 | HuggingFace Papers | `huggingface.co/api/daily_papers` | JSON API | 8 | 全部视为相关 (纯 AI 论文) |
 | HuggingFace Models | `huggingface.co/api/models?sort=trending` | JSON API | 7 | 全部视为相关 (趋势模型) |
-| Reddit r/LocalLLaMA | `reddit.com/r/LocalLLaMA/.rss` | RSS | 6 | 全部视为相关 (纯 AI 社区) |
-| Reddit r/MachineLearning | `reddit.com/r/MachineLearning/.rss` | RSS | 5 | 关键词过滤 |
-| Reddit r/singularity | `reddit.com/r/singularity/.rss` | RSS | 5 | 关键词过滤 |
 | GitHub Trending | `api.github.com/search/repositories` | JSON API | 6 | 全部视为相关 (AI 仓库搜索) |
 
 ## 关键代码位置
@@ -109,7 +106,7 @@ python -c "import collect; items=collect.collect(); print(collect.build_text(ite
 python -c "import collect; items=collect.collect(); [print(f'{i[\"score\"]:>3} {i[\"source\"]} | {i[\"title\"][:50]}') for i in items]"
 ```
 
-网络请求需要能访问 `venturebeat.com`、`feeds.arstechnica.com`、`theverge.com`、`hnrss.org`、`reddit.com` (RSS 源), `huggingface.co`、`api.github.com` (JSON API 源) 及 `api.deepseek.com` (可选翻译摘要)。
+网络请求需要能访问 `venturebeat.com`、`feeds.arstechnica.com`、`theverge.com`、`hnrss.org` (RSS 源), `huggingface.co`、`api.github.com` (JSON API 源) 及 `api.deepseek.com` (可选翻译摘要)。
 
 ## GitHub Actions
 
@@ -163,8 +160,7 @@ Markdown 格式，适配 Server酱 (微信) 和 ntfy 的 markdown 渲染:
 
 - `os.getenv("X") or "默认值"` 模式: GitHub Actions 空 secret 会变成空字符串，不能用 `os.getenv("X", "默认值")` (后者对空字符串不回退)
 - Hacker News RSS 的 description 常为 'Comments', `_clean_abstract` 会过滤
-- Reddit RSS 可能被限流 (429); GitHub Actions IP 可正常访问，本地可能超时
 - HuggingFace API 不需要认证，但本地网络可能无法直连 (GitHub Actions 无此问题)
 - GitHub Search API 未认证时限 10 次/分钟，单次调用足够; 设置 `GITHUB_TOKEN` 可提升至 30 次/分钟
 - `collect.py` 修改后本地跑一次验证: `python -c "import collect; print(collect.build_text(collect.collect()))"`
-- README.md 内容较旧 (仍引用 arXiv/HN/Reddit 等国际源)，以 `collect.py` 代码和本文件为准
+- README.md 内容较旧 (仍引用 arXiv/HN 等国际源)，以 `collect.py` 代码和本文件为准
