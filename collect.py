@@ -430,12 +430,17 @@ def fetch_github_trending():
         name = repo.get("full_name", "")
         desc = repo.get("description", "") or ""
         stars = repo.get("stargazers_count", 0)
+        lang = (repo.get("language") or "").strip()
         items.append(
             {
                 "title": f"{name}: {desc}" if desc else name,
                 "link": repo.get("html_url", ""),
                 "summary": f"⭐ {stars} · {desc}"[:ABSTRACT_CAP],
                 "date": parse_date(repo.get("created_at", "")),
+                "stars": stars,
+                "repo_name": name,
+                "repo_desc": desc,
+                "lang": lang,
             }
         )
     return items
@@ -473,15 +478,18 @@ def _process_entries(source, entries, items, seen, cutoff):
         if key in seen:
             continue
         seen.add(key)
-        items.append(
-            {
-                "source": source,
-                "title": title,
-                "link": link,
-                "date": date.isoformat() if date else "",
-                "abstract": strip_html(e.get("summary", ""))[:ABSTRACT_CAP],
-            }
-        )
+        item = {
+            "source": source,
+            "title": title,
+            "link": link,
+            "date": date.isoformat() if date else "",
+            "abstract": strip_html(e.get("summary", ""))[:ABSTRACT_CAP],
+        }
+        # 透传 GitHub Trending 额外字段 (用于独立表格)
+        for k in ("stars", "repo_name", "repo_desc", "lang"):
+            if k in e:
+                item[k] = e[k]
+        items.append(item)
         count += 1
     log(f"  - {source}: {count} 条")
 
@@ -615,14 +623,41 @@ def plain_list(items):
     return "\n".join(lines)
 
 
+def _trending_table(trending):
+    """GitHub 趋势仓库独立表格 (Top 5, 按星数降序)。"""
+    top = sorted(trending, key=lambda x: x.get("stars", 0), reverse=True)[:5]
+    if not top:
+        return ""
+    lines = [
+        "## 🔥 GitHub 趋势仓库 (近 7 天 Top 5)",
+        "",
+        "| 仓库 | ⭐ | 用途 |",
+        "|------|----|------|",
+    ]
+    for it in top:
+        name = it.get("repo_name", it["title"])
+        stars = it.get("stars", 0)
+        desc = it.get("repo_desc", "").strip()
+        if len(desc) > 60:
+            desc = desc[:57] + "..."
+        link = it.get("link", "")
+        lines.append(f"| [{name}]({link}) | {stars} | {desc} |")
+    return "\n".join(lines)
+
+
 def build_text(items):
     today = datetime.now(BEIJING).strftime("%Y-%m-%d")
+    # GitHub Trending 单独成表，不混入主新闻列表
+    trending = [it for it in items if it["source"] == "GitHub Trending"]
+    rest = [it for it in items if it["source"] != "GitHub Trending"]
     parts = [f"# AI 日报 {today}"]
-    if items:
-        llm_digest(items)  # 原地润色标题/摘要; 失败则静默, plain_list 用原始数据
-        parts.append(plain_list(items))
+    if rest:
+        llm_digest(rest)  # 原地润色标题/摘要; 失败则静默, plain_list 用原始数据
+        parts.append(plain_list(rest))
     else:
         parts.append("今天没有采集到新的 AI 新闻。")
+    if trending:
+        parts.append(_trending_table(trending))
     return "\n\n".join(part.strip("\n") for part in parts).rstrip() + "\n"
 
 
