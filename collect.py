@@ -25,6 +25,7 @@ import re
 import sys
 import html
 import json
+import time
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -141,6 +142,12 @@ ABSTRACT_CAP = 400  # 单条送入 LLM 的摘要字符上限
 ALWAYS_RELEVANT = {
     "VentureBeat AI",
     "Reddit r/LocalLLaMA",
+    "HuggingFace Papers",
+    "HuggingFace Models",
+    "GitHub Trending",
+}
+# 跳过时间窗口过滤的来源 (自带时间限定或非时效性)
+SKIP_TIME_FILTER = {
     "HuggingFace Papers",
     "HuggingFace Models",
     "GitHub Trending",
@@ -324,12 +331,20 @@ def parse_feed(raw):
     return items
 
 
-def fetch_entries(url):
-    req = urllib.request.Request(
-        url, headers={"User-Agent": UA, "Accept-Encoding": "identity"}
-    )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return parse_feed(r.read())
+def fetch_entries(url, retries=2):
+    """获取 RSS/Atom feed, 429 限流时自动重试。"""
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(
+            url, headers={"User-Agent": UA, "Accept-Encoding": "identity"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return parse_feed(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries:
+                time.sleep(3 * (attempt + 1))  # 3s, 6s 退避
+                continue
+            raise
 
 
 def fetch_json(url, headers=None):
@@ -345,6 +360,9 @@ def fetch_json(url, headers=None):
 def fetch_hf_papers():
     """HuggingFace 每日热门论文 (JSON API, 非 RSS)。"""
     data = fetch_json("https://huggingface.co/api/daily_papers")
+    # API 可能返回数组或 {results: [...]} 分页包装
+    if isinstance(data, dict):
+        data = data.get("results", [])
     items = []
     for entry in data:
         paper = entry.get("paper", entry) if isinstance(entry, dict) else {}
@@ -369,7 +387,15 @@ def fetch_hf_papers():
 
 def fetch_hf_models():
     """HuggingFace 趋势模型 (JSON API, 非 RSS)。"""
-    data = fetch_json("https://huggingface.co/api/models?sort=trending&limit=10")
+    # sort=trending 可能在部分 API 版本返回 400, 回退 sort=likes
+    try:
+        data = fetch_json("https://huggingface.co/api/models?sort=trending&limit=10")
+    except Exception:
+        data = fetch_json(
+            "https://huggingface.co/api/models?sort=likes&direction=-1&limit=10"
+        )
+    if isinstance(data, dict):
+        data = data.get("models", data.get("results", []))
     items = []
     for m in data:
         mid = m.get("id", "")
@@ -442,6 +468,7 @@ def _process_entries(source, entries, items, seen, cutoff):
     """处理单个来源的条目: 去重、过滤、收集。"""
     count = 0
     always = source in ALWAYS_RELEVANT
+    skip_time = source in SKIP_TIME_FILTER
     for e in entries:
         title = strip_html(e.get("title", ""))
         if not title:
@@ -450,7 +477,7 @@ def _process_entries(source, entries, items, seen, cutoff):
         date = e.get("date")
         if not (always or is_ai_relevant(title)):
             continue
-        if date and date < cutoff:
+        if date and not skip_time and date < cutoff:
             continue
         key = re.sub(r"\W+", "", title.lower())[:60] or link
         if key in seen:
