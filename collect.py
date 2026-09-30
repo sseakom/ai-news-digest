@@ -771,11 +771,71 @@ def plain_list(items):
     return "\n".join(lines)
 
 
+def _translate_repos(top):
+    """用 DeepSeek 批量翻译仓库描述为中文, 原地写回 repo_desc。无 key 或失败时静默回退。"""
+    key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        return
+    descs = [it.get("repo_desc", "").strip() for it in top]
+    if not any(descs):
+        return
+    context = "\n".join(f"[{i + 1}] {d}" for i, d in enumerate(descs))
+    prompt = (
+        "将以下 GitHub 仓库描述翻译为简洁中文(技术术语可保留英文缩写如 AI/LLM/GPT)。"
+        "只输出 JSON 数组, 顺序与输入一致, 不要解释或前后缀:\n"
+        '["中文描述"]\n\n'
+        f"{context}"
+    )
+    body = json.dumps(
+        {
+            "model": "deepseek-chat",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是技术翻译, 擅长将英文项目描述浓缩成简洁中文。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "stream": False,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.deepseek.com/v1/chat/completions",
+        data=body,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        log(f"  ! 仓库描述翻译失败, 回退英文: {e}")
+        return
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\[.*\]", text, re.S)
+        if not m:
+            return
+        try:
+            result = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            return
+    if not isinstance(result, list) or len(result) != len(top):
+        return
+    for i, r in enumerate(result):
+        if isinstance(r, str) and r.strip():
+            top[i]["repo_desc"] = r.strip()
+
+
 def _trending_table(trending):
     """GitHub 趋势仓库独立表格 (Top 5, 按星数降序)。"""
     top = sorted(trending, key=lambda x: x.get("stars", 0), reverse=True)[:5]
     if not top:
         return ""
+    _translate_repos(top)
     lines = [
         "## 🔥 GitHub 趋势仓库 (近 7 天 Top 5)",
         "",
