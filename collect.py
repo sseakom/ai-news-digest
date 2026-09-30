@@ -2,6 +2,14 @@
 # -*- coding: utf-8 -*-
 """每日 AI 新闻聚合 + 推送 (仅用 Python 标准库, 零第三方依赖)。
 
+特性:
+  - 事件聚簇: 多个来源报道同一事件时自动合并 (标题 token Jaccard 相似度),
+    代表条目携带 cluster_sources/cluster_count/cluster_links 字段
+  - 信源分级: primary(一手原始) > media(媒体报道) > community(社区讨论), 评分时分级加分
+  - 多源热度加成: 被 N 个独立来源报道的事件额外 +(N-1)*3 分
+  - LLM 评分增强: 设置 DEEPSEEK_API_KEY 后, DeepSeek 除翻译摘要外还为每条新闻
+    输出 1-10 重要性评分 (llm_score), 直接加到权重分上并重新排序
+
 推送到手机 (按优先级依次尝试):
   Server酱: 设置 SERVERCHAN_KEY 即可走微信推送 (国内推荐)
   ntfy    : 设置 NTFY_TOPIC (主题名当密钥), 默认服务器 https://ntfy.sh
@@ -118,6 +126,18 @@ SOURCE_WEIGHT = {
     "HuggingFace Models": 7,
     "GitHub Trending": 6,
 }
+# 信源分级: primary(一手原始) > media(媒体报道) > community(社区讨论)
+SOURCE_TIER = {
+    "HuggingFace Papers": "primary",
+    "GitHub Trending": "primary",
+    "VentureBeat AI": "media",
+    "Ars Technica": "media",
+    "The Verge": "media",
+    "Hacker News": "community",
+    "HuggingFace Models": "primary",
+}
+# 信源分级加分: 一手信息源更重要
+TIER_BONUS = {"primary": 2, "media": 1, "community": 0}
 # 用户重点关注的话题, 命中加分
 HOT_TOPICS = [
     "agent",
@@ -199,9 +219,104 @@ def _score_stars(score):
     return "★☆☆☆☆"
 
 
+# 标题归一化时剔除的常见停用词 (不影响事件语义)
+_TITLE_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "of",
+    "on",
+    "in",
+    "for",
+    "to",
+    "with",
+    "and",
+    "or",
+    "is",
+    "are",
+    "will",
+    "be",
+    "new",
+    "says",
+    "reports",
+    "at",
+    "by",
+    "from",
+    "as",
+    "it",
+    "its",
+    "this",
+    "that",
+    "after",
+    "over",
+    "how",
+    "why",
+    "what",
+}
+
+
+def _normalize_title(title):
+    """标题归一化: 转小写、去标点、去停用词, 返回 token 集合。"""
+    low = title.lower()
+    tokens = re.findall(r"[a-z0-9]+", low)
+    return {t for t in tokens if t not in _TITLE_STOPWORDS}
+
+
+def _jaccard(set_a, set_b):
+    """计算两个 token 集合的 Jaccard 相似度。"""
+    if not set_a or not set_b:
+        return 0.0
+    inter = len(set_a & set_b)
+    if not inter:
+        return 0.0
+    return inter / len(set_a | set_b)
+
+
+def _cluster_events(items, threshold=0.5):
+    """事件聚簇: 多个来源报道同一事件时合并为一个代表条目。
+
+    贪心法: 逐个 item 与已有 cluster 的代表比较 Jaccard 相似度,
+    > threshold 且来源不同则归入该 cluster, 否则新建。
+    每个 cluster 保留先到的 item 作为代表 (此时未评分, 用原始顺序),
+    代表上追加 cluster_sources/cluster_count/cluster_links 字段;
+    单来源 cluster 保持原样。"""
+    clusters = []  # [{rep, tokens, members}]
+    for item in items:
+        tokens = _normalize_title(item["title"])
+        target = None
+        for c in clusters:
+            # 同来源的精确去重已由 _process_entries 处理, 聚簇只在跨来源间进行
+            if c["rep"]["source"] == item["source"]:
+                continue
+            if _jaccard(tokens, c["tokens"]) > threshold:
+                target = c
+                break
+        if target is None:
+            clusters.append({"rep": item, "tokens": tokens, "members": [item]})
+        else:
+            target["members"].append(item)
+    result = []
+    for c in clusters:
+        rep = c["rep"]
+        # 按来源去重收集 (source, link) 对, 保持两个列表对齐
+        seen_src = {}
+        for m in c["members"]:
+            seen_src.setdefault(m["source"], m.get("link", ""))
+        sources = list(seen_src)
+        links = [seen_src[s] for s in sources]
+        if len(sources) > 1:
+            rep["cluster_sources"] = sources
+            rep["cluster_count"] = len(sources)
+            rep["cluster_links"] = links
+        result.append(rep)
+    return result
+
+
 def score_item(item):
     """计算新闻重要程度权重 (越高越重要)。"""
     score = SOURCE_WEIGHT.get(item["source"], 5)
+    # 信源分级加分: primary(一手原始) +2, media(媒体报道) +1, community +0
+    score += TIER_BONUS.get(SOURCE_TIER.get(item["source"], "community"), 0)
     low = item["title"].lower()
     for topic in HOT_TOPICS:
         if topic in low:
@@ -220,6 +335,10 @@ def score_item(item):
                 score += 1
         except Exception:
             pass
+    # 多源覆盖热度加成: 被 N 个独立来源报道的事件 +(N-1)*3 分
+    sources = item.get("cluster_sources")
+    if sources and len(sources) > 1:
+        score += (len(sources) - 1) * 3
     return score
 
 
@@ -513,6 +632,8 @@ def collect():
             log(f"  ! 获取失败: {name} ({e})")
             continue
         _process_entries(name, entries, items, seen, cutoff)
+    # 事件聚簇: 多源报道同一事件时合并 (评分前进行, 评分时利用 cluster 字段)
+    items = _cluster_events(items)
     for item in items:
         item["score"] = score_item(item)
     items.sort(key=lambda x: (x["score"], x["date"] or ""), reverse=True)
@@ -534,8 +655,10 @@ def llm_digest(items):
         "你是 AI 新闻编辑。所有新闻来源均为英文媒体。为每条新闻生成:\n"
         "1. 中文标题: 将英文标题翻译成中文(技术术语可保留英文缩写如 AI/GPT/LLM)\n"
         "2. 一句话摘要: 约60字中文, 点出核心事实与关键影响或细节\n"
+        "3. 重要性评分(1-10): 10=重大突破/里程碑(如新模型发布、重大融资), "
+        "7-8=有意义的技术进展, 5-6=常规更新, 3-4=边缘相关, 1-2=噪声\n"
         "只输出 JSON 数组, 顺序与输入一致, 不要解释或前后缀:\n"
-        '[{"t":"中文标题","s":"一句话摘要"}]\n\n'
+        '[{"t":"中文标题","s":"一句话摘要","r":8}]\n\n'
         f"{context}"
     )
     body = json.dumps(
@@ -592,6 +715,10 @@ def llm_digest(items):
             top[i]["title"] = t
         if s:
             top[i]["abstract"] = s
+        # LLM 重要性评分写回 (1-10 整数, 异常值忽略)
+        rv = r.get("r")
+        if isinstance(rv, (int, float)) and not isinstance(rv, bool) and 1 <= rv <= 10:
+            top[i]["llm_score"] = int(rv)
     return True
 
 
@@ -606,9 +733,19 @@ def plain_list(items):
     for i, it in enumerate(top, 1):
         lines.append(f"### {i}. {it['title']}")
         lines.append("")
-        lines.append(
-            f"**{_score_stars(it['score'])}** · 权重 {it['score']} · {_source_cn(it['source'])}"
-        )
+        # 来源行: 聚簇多源时显示"N 源报道"
+        sources = it.get("cluster_sources")
+        if sources and len(sources) > 1:
+            source_str = f"📰 {len(sources)} 源报道: " + ", ".join(
+                _source_cn(s) for s in sources
+            )
+        else:
+            source_str = _source_cn(it["source"])
+        score_line = f"**{_score_stars(it['score'])}** · 权重 {it['score']}"
+        if "llm_score" in it:
+            score_line += f" · LLM {it['llm_score']}/10"
+        score_line += f" · {source_str}"
+        lines.append(score_line)
         lines.append("")
         abstract = _clean_abstract(it.get("abstract", ""))
         if abstract:
@@ -616,6 +753,17 @@ def plain_list(items):
             lines.append("")
         lines.append(f"🔗 [阅读原文]({it['link']})")
         lines.append("")
+        # 聚簇多链接时追加"更多来源"
+        links = it.get("cluster_links")
+        if sources and links and len(sources) > 1 and len(links) > 1:
+            extra = [
+                f"[{_source_cn(s)}]({l})"
+                for s, l in zip(sources, links)
+                if l and l != it["link"]
+            ]
+            if extra:
+                lines.append(f"📎 更多来源: {' · '.join(extra[:3])}")
+                lines.append("")
         # 条目间加分隔线，最后一条后不加
         if i < len(top):
             lines.append("---")
@@ -652,7 +800,12 @@ def build_text(items):
     rest = [it for it in items if it["source"] != "GitHub Trending"]
     parts = [f"# AI 日报 {today}"]
     if rest:
-        llm_digest(rest)  # 原地润色标题/摘要; 失败则静默, plain_list 用原始数据
+        if llm_digest(rest):  # 原地润色标题/摘要; 失败则静默, plain_list 用原始数据
+            # LLM 评分修正: 将 llm_score 折算为额外加分并重新排序
+            for it in rest:
+                if "llm_score" in it:
+                    it["score"] += it["llm_score"]
+            rest.sort(key=lambda x: (x["score"], x["date"] or ""), reverse=True)
         parts.append(plain_list(rest))
     else:
         parts.append("今天没有采集到新的 AI 新闻。")
